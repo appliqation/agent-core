@@ -36,6 +36,10 @@
     "./config": {
       "types": "./dist/config/index.d.ts",
       "import": "./dist/config/index.js"
+    },
+    "./audit": {
+      "types": "./dist/audit/index.d.ts",
+      "import": "./dist/audit/index.js"
     }
   },
   "files": [
@@ -52,16 +56,17 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
+    "mongodb": "^6.21.0",
     "openai": "^4.87.3"
   },
   "peerDependencies": {
-    "playwright": ">=1.51.0",
-    "@appliqation/automation-sdk": "^2.7.0"
+    "@appliqation/automation-sdk": "^2.7.0",
+    "playwright": ">=1.51.0"
   },
   "devDependencies": {
+    "@appliqation/automation-sdk": "^2.7.0",
     "@types/node": "^22.13.10",
     "playwright": "^1.51.0",
-    "@appliqation/automation-sdk": "^2.7.0",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2",
     "vitest": "^3.2.7"

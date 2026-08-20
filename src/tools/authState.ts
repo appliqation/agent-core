@@ -21,3 +21,31 @@ export function resolveStorageState(projectId: number, role: string): NonNullabl
   }
   return JSON.parse(readFileSync(path, 'utf-8'));
 }
+
+/**
+ * BYO-credential resolution for API testing — same posture as
+ * resolveStorageState()'s UI auth: read from the consuming agent's own
+ * .env, never performed or handled beyond that single read, never exposed
+ * to the model as a value (the caller injects the returned header directly
+ * into an APIRequestContext's extraHTTPHeaders, once, at construction).
+ *
+ * APPQ_PROJECT_<id>_<ROLE>_API_KEY holds the credential value.
+ * APPQ_PROJECT_<id>_<ROLE>_API_HEADER_NAME optionally overrides the header
+ * name (defaults to "Authorization", with the value sent as "Bearer
+ * <key>" — set API_HEADER_NAME to send the raw key as-is under a different
+ * header, e.g. "X-Api-Key").
+ */
+export interface ApiAuthHeader {
+  name: string;
+  value: string;
+}
+
+export function resolveApiAuth(projectId: number, role: string): ApiAuthHeader | undefined {
+  const upperRole = role.toUpperCase();
+  const apiKey = process.env[`APPQ_PROJECT_${projectId}_${upperRole}_API_KEY`];
+  if (!apiKey) return undefined;
+
+  const headerName = process.env[`APPQ_PROJECT_${projectId}_${upperRole}_API_HEADER_NAME`];
+  if (headerName) return { name: headerName, value: apiKey };
+  return { name: 'Authorization', value: `Bearer ${apiKey}` };
+}

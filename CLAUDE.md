@@ -78,13 +78,35 @@ across agents with different `.env` shapes.
   mailto:/tel:/sms: regex bank, checked before any click dispatches; genuinely universal),
   `browserTools.ts` (`PlaywrightBrowserTools`/`BROWSER_TOOL_DEFS` — Playwright-backed
   `browser_*` tool palette, ref-based via `page.ariaSnapshot({mode:'ai'})` + `aria-ref=`
-  locators), `authState.ts` (`resolveStorageState(projectId, role)` — reads the
-  Playwright storageState `@appliqation/automation-sdk`'s `setupAuth()` resolves,
-  fail-closed if missing; never performs login or handles credentials itself),
-  `roleInference.ts` (`knownRolesForProject()`/`inferRole()`/`parseScenarioTcList()` —
-  deterministic, never-LLM per-TC role inference for mixed-role scenarios; see
-  `appliqation-autotest/CLAUDE.md`'s "Per-TC role inference" for the full precedence
-  reasoning, unchanged by the move).
+  locators. Tracks a `pages: Page[]` + `selected` index rather than one fixed `Page` —
+  `browser_tabs` (list/new/close/select) is the only thing that ever changes `selected`;
+  every other `browser_*` op (including `browser_resize` and the unrestricted
+  `browser_evaluate`) targets `currentPage()`, so a consumer that never calls
+  `browser_tabs` sees no behavior change. Evidence (`EvidenceCapture`, console/network
+  listeners) is tracked **per page**, not just the original one — console/network
+  listeners are bound at `Page` construction, so a new tab's own evidence would
+  otherwise be invisible to `browser_console_messages`/`browser_network_requests`
+  after switching to it. A tab switch clears `knownRefs`: `aria-ref=` locators only
+  resolve against the page they were snapshotted from), `apiTools.ts`
+  (`ApiRequestTools`/`API_TOOL_DEFS` — a single `http_request` tool wrapping a
+  Playwright `APIRequestContext`; dry-run write-verb suppression built into `dispatch()`
+  itself, not a separate wrapper), `authState.ts` (`resolveStorageState(projectId, role)`
+  — reads the Playwright storageState `@appliqation/automation-sdk`'s `setupAuth()`
+  resolves, fail-closed if missing, never performs login or handles credentials itself;
+  `resolveApiAuth(projectId, role)` — reads `APPQ_PROJECT_<id>_<ROLE>_API_KEY`/
+  `_API_HEADER_NAME` from `process.env`, returns `undefined` (not throwing) when
+  unconfigured, since API auth is legitimately optional unlike UI storage state),
+  `roleInference.ts` (`knownRolesForProject()`/`inferRole()`/`isApiTest()`/
+  `parseScenarioTcList()` — deterministic, never-LLM per-TC role/test-type inference for
+  mixed scenarios; see `appliqation-autotest/CLAUDE.md`'s "Per-TC role inference" for the
+  full precedence reasoning, unchanged by the move), `projectContext.ts`
+  (`PROJECT_CONTEXT_TOOL`/`createReadOnlyProjectContextDispatcher()` — the
+  argument-level gate `enrich_project_context` needs, since tool-*name* allowlisting
+  can't express "this tool, but only this argument value"; promoted here from
+  `appliqation-autopilot` once a second unsupervised agent — `appliqation-explorer` —
+  needed the identical guarantee. Allowlists the one safe shape, `action=read`, rather
+  than denylisting the unsafe one, so a missing or malformed `action` is refused too,
+  not just an explicit `"write"`).
 - `src/evidence/capture.ts` — `EvidenceCapture`: screenshot/console/network/accessibility-
   snapshot capture via native Playwright/CDP APIs (`page.on('console'/'request'/...)`,
   `page.screenshot()`, `page.ariaSnapshot()`), cursor-based delta reads
@@ -94,6 +116,26 @@ across agents with different `.env` shapes.
   `.env` shape is genuinely different (autotest has an executor/validator model split and
   an image-check knob; a future agent won't), so each agent keeps its own frozen `config`
   object built from these two functions, not a generalized `buildConfig(schema)`.
+- `src/audit/sink.ts` — `AuditRecord`/`AuditSink`, `createMongoAuditSink()`/
+  `createJsonlAuditSink()`/`noopAuditSink`, `resolveAuditSink(env)` (precedence: Mongo >
+  JSONL > noop, mirroring `resolveProvider()`'s own shape — nothing writes anywhere
+  unless a consuming agent's `.env` configures it, same BYO posture as every LLM key),
+  `createUsageAccumulator()` (sums a run's `'usage'` onEvent callbacks into one
+  invocation-level total), and `safeRecord(sink, entry)` — **the one function every
+  consuming CLI should actually call**, not `sink.record()` directly: it catches and
+  logs any write failure rather than propagating it, since an audit write is
+  observability about a run, not part of the run itself, and must never be able to fail
+  or slow down the real task it's describing. Deliberately **not** a knowledge channel:
+  an `AuditRecord` is read by a human later (`appliqation-dashboard`), never fed back
+  into a future agent's own decisions — a genuinely different trust question from
+  `enrich_project_context`'s write boundary (`tools/projectContext.ts`), which exists
+  precisely because writes *there* would be treated as established fact by later runs.
+  `outcome` is deliberately just the consuming CLI's own already-built `--json` summary
+  object, passed through verbatim — no second schema to keep in sync with
+  `RunSummary`/`GenerateSummary`/etc. First and, as of this writing, only consumer of
+  the real `mongodb` npm driver in this package (matches `workers/automan-worker`'s own
+  pinned version) — every other module here has stayed dependency-light on purpose;
+  this is the one place persistence genuinely can't be avoided.
 
 ## Commands
 

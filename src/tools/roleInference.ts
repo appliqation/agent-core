@@ -77,6 +77,26 @@ export function inferRole(tc: TcInfo, knownRoles: string[]): string | null {
 }
 
 /**
+ * Whether a TC's own tag(s) mark it as an API test case (execute via
+ * http_request, judge from a captured request/response pair) rather than
+ * the default UI/browser path. `tag` can hold multiple comma-separated
+ * values (get_scenario's real format, e.g. "Functional, Appq_Auto") so
+ * this checks each one individually rather than the whole string at once
+ * — same deterministic, no-LLM-call discipline as inferRole() above, for
+ * the same reason: test-type selection is safety/routing-adjacent (it
+ * decides whether a browser or a raw HTTP client gets offered at all),
+ * kept out of the model's hands like every other decision of that kind in
+ * this codebase.
+ */
+export function isApiTest(tc: TcInfo): boolean {
+  if (!tc.tag) return false;
+  return tc.tag
+    .split(',')
+    .map((t) => t.trim().toLowerCase())
+    .includes('api');
+}
+
+/**
  * Parses get_scenario's formatted TC list text ("  1. Name (UUID: x) [Tag:
  * y]") into structured {testCaseUuid, name, tag} entries. Coupled to that
  * tool's current text format (GetScenarioTool.php) — the same trade-off

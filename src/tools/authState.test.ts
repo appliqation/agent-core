@@ -66,3 +66,35 @@ describe('resolveStorageState', () => {
     );
   });
 });
+
+describe('resolveApiAuth', () => {
+  const ENV_KEYS = ['APPQ_PROJECT_1349_MANAGER_API_KEY', 'APPQ_PROJECT_1349_MANAGER_API_HEADER_NAME'];
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) delete process.env[key];
+  });
+
+  it('returns undefined when no API key is configured for this project/role', async () => {
+    const { resolveApiAuth } = await import('./authState.js');
+    expect(resolveApiAuth(1349, 'manager')).toBeUndefined();
+  });
+
+  it('defaults to an Authorization: Bearer header when only the key is set', async () => {
+    process.env.APPQ_PROJECT_1349_MANAGER_API_KEY = 'secret-token';
+    const { resolveApiAuth } = await import('./authState.js');
+    expect(resolveApiAuth(1349, 'manager')).toEqual({ name: 'Authorization', value: 'Bearer secret-token' });
+  });
+
+  it('uses a custom header name, sending the raw key, when API_HEADER_NAME is set', async () => {
+    process.env.APPQ_PROJECT_1349_MANAGER_API_KEY = 'secret-token';
+    process.env.APPQ_PROJECT_1349_MANAGER_API_HEADER_NAME = 'X-Api-Key';
+    const { resolveApiAuth } = await import('./authState.js');
+    expect(resolveApiAuth(1349, 'manager')).toEqual({ name: 'X-Api-Key', value: 'secret-token' });
+  });
+
+  it('is scoped per role — a different role with no key configured gets undefined', async () => {
+    process.env.APPQ_PROJECT_1349_MANAGER_API_KEY = 'secret-token';
+    const { resolveApiAuth } = await import('./authState.js');
+    expect(resolveApiAuth(1349, 'admin')).toBeUndefined();
+  });
+});

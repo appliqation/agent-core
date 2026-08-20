@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { knownRolesForProject, inferRole, parseScenarioTcList, parseTestSetTcList } from './roleInference.js';
+import { knownRolesForProject, inferRole, isApiTest, parseScenarioTcList, parseTestSetTcList } from './roleInference.js';
 
 describe('knownRolesForProject', () => {
   const originalEnv = { ...process.env };
@@ -92,6 +92,33 @@ describe('inferRole', () => {
   it('with no known roles configured, only explicit signals produce a role', () => {
     expect(inferRole({ testCaseUuid: 't10', name: 'Admin can view settings' }, [])).toBeNull();
     expect(inferRole({ testCaseUuid: 't11', name: 'Some TC', tag: 'role:manager' }, [])).toBe('manager');
+  });
+});
+
+describe('isApiTest', () => {
+  it('returns false when the TC has no tag at all', () => {
+    expect(isApiTest({ testCaseUuid: 't1', name: 'Some TC' })).toBe(false);
+  });
+
+  it('returns true for an exact "api" tag', () => {
+    expect(isApiTest({ testCaseUuid: 't1', name: 'Some TC', tag: 'api' })).toBe(true);
+  });
+
+  it('is case-insensitive', () => {
+    expect(isApiTest({ testCaseUuid: 't1', name: 'Some TC', tag: 'API' })).toBe(true);
+  });
+
+  it('matches within a real, comma-separated multi-tag string, regardless of position', () => {
+    expect(isApiTest({ testCaseUuid: 't1', name: 'Some TC', tag: 'Functional, api' })).toBe(true);
+    expect(isApiTest({ testCaseUuid: 't1', name: 'Some TC', tag: 'api, Appq_Auto' })).toBe(true);
+  });
+
+  it('does not match a tag that merely contains "api" as a substring', () => {
+    expect(isApiTest({ testCaseUuid: 't1', name: 'Some TC', tag: 'Appq_Auto' })).toBe(false);
+  });
+
+  it('returns false for an unrelated tag', () => {
+    expect(isApiTest({ testCaseUuid: 't1', name: 'Some TC', tag: 'Functional' })).toBe(false);
   });
 });
 
