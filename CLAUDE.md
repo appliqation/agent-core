@@ -13,10 +13,10 @@ no `.env`. Extracted out of `appliqation-autotest` (see that repo's `CLAUDE.md`,
 `appliqation-autotest` has already been migrated onto this package; it's the reference
 consumer to look at for real usage examples of everything below.
 
-**Not yet published to npm.** Consumed locally via `file:../appliqation-agent-core`
-dependencies until it is — switch those to a real version pin (`^0.1.0` etc.) once
-published, mirroring how `@appliqation/automation-sdk` (`automation-sdk-js/`) is
-published and consumed.
+**Published to npm** as `@appliqation/agent-core` (real semver, bump on every real
+change). Every consuming agent depends on it via a real version range (`^0.1.0`),
+mirroring how `@appliqation/automation-sdk` (`automation-sdk-js/`) is published and
+consumed — not a `file:` path.
 
 ## Design principle: mechanism shared, domain knowledge local
 
