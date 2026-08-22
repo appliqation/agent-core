@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyClick } from './destructiveActionGate.js';
+import { classifyClick, classifyEvaluate } from './destructiveActionGate.js';
 
 describe('classifyClick — destructive-action gate', () => {
   const blockedLabels = [
@@ -78,5 +78,45 @@ describe('classifyClick — destructive-action gate', () => {
 
   it('does not block a regular http(s) link', () => {
     expect(classifyClick({ label: 'Learn more', tag: 'a', href: 'https://example.com/about' })).toBeNull();
+  });
+});
+
+describe('classifyEvaluate — browser_evaluate destructive-action gate', () => {
+  const blockedScripts = [
+    'document.querySelector("[data-action=delete-account]").click()',
+    '() => document.getElementById("delete-btn").click()',
+    'document.forms[0].submit()',
+    'document.querySelector("form").requestSubmit()',
+    'el.dispatchEvent(new MouseEvent("click"))',
+    'fetch("/api/account", { method: "DELETE" })',
+    'fetch("/api/orders", {method: \'POST\', body: JSON.stringify(order)})',
+    'const xhr = new XMLHttpRequest(); xhr.open("POST", "/api/orders")',
+  ];
+
+  it.each(blockedScripts)('blocks %s', (script) => {
+    const result = classifyEvaluate(script);
+    expect(result).not.toBeNull();
+    expect(result?.ok).toBe(false);
+    expect(result?.text).toMatch(/Blocked/);
+  });
+
+  const safeScripts = [
+    'document.title',
+    '() => document.title',
+    'document.querySelector(".price").textContent',
+    'localStorage.getItem("token")',
+    'performance.getEntriesByType("navigation")',
+    'fetch("/api/status")', // read-only GET, no write method
+    'fetch("/api/status", { method: "GET" })',
+    'navigator.serviceWorker.getRegistrations()',
+  ];
+
+  it.each(safeScripts)('does not block %s', (script) => {
+    expect(classifyEvaluate(script)).toBeNull();
+  });
+
+  it('is case-insensitive on the write method', () => {
+    expect(classifyEvaluate('fetch("/x", { method: "delete" })')).not.toBeNull();
+    expect(classifyEvaluate('fetch("/x", { method: "Delete" })')).not.toBeNull();
   });
 });

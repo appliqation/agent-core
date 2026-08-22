@@ -12,9 +12,10 @@
 import type { Page } from 'playwright';
 import type { LlmToolDef, ToolResult } from '../types.js';
 import { EvidenceCapture } from '../evidence/capture.js';
-import { classifyClick, type ClickTarget } from './destructiveActionGate.js';
+import { classifyClick, classifyEvaluate, type ClickTarget } from './destructiveActionGate.js';
 
 export type ClickGate = (target: ClickTarget) => ToolResult | null;
+export type EvaluateGate = (functionSource: string) => ToolResult | null;
 
 /** Stages a captured screenshot somewhere (an appq upload, a local file, ...) and returns a ref for it. */
 export type ScreenshotSink = (
@@ -24,6 +25,7 @@ export type ScreenshotSink = (
 
 export interface BrowserToolsHooks {
   onBeforeClick?: ClickGate;
+  onBeforeEvaluate?: EvaluateGate;
   screenshotSink?: ScreenshotSink;
 }
 
@@ -137,9 +139,9 @@ export const BROWSER_TOOL_DEFS: LlmToolDef[] = [
     name: 'browser_evaluate',
     description:
       'Run JavaScript in the page context of the currently selected tab and return the result. Pass either a ' +
-      'plain expression (e.g. "document.title") or a function (e.g. "() => document.title"). Unrestricted — use ' +
-      'for read-only inspection (Service Worker state, Performance API, localStorage, etc.), not to work around ' +
-      'the destructive-action gate on browser_click.',
+      'plain expression (e.g. "document.title") or a function (e.g. "() => document.title"). For read-only ' +
+      'inspection (Service Worker state, Performance API, localStorage, etc.) — a script that simulates a ' +
+      'click/submit or sends a write-verb request is blocked, same as browser_click\'s destructive-action gate.',
     inputSchema: { type: 'object', properties: { function: { type: 'string' } }, required: ['function'] },
   },
 ];
@@ -280,7 +282,11 @@ export class PlaywrightBrowserTools {
         return this.dispatchTabs(args);
       }
       case 'browser_evaluate': {
-        const result = await this.currentPage().evaluate(String(args.function));
+        const fn = String(args.function ?? '');
+        const gate = this.hooks.onBeforeEvaluate ?? classifyEvaluate;
+        const blocked = gate(fn);
+        if (blocked) return blocked;
+        const result = await this.currentPage().evaluate(fn);
         return { ok: true, text: result === undefined ? 'undefined' : JSON.stringify(result) };
       }
       default:

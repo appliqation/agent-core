@@ -51,3 +51,35 @@ export function classifyClick(target: ClickTarget): ToolResult | null {
   }
   return null;
 }
+
+// browser_evaluate runs arbitrary JS with no per-target label to check, so it
+// can't reuse classifyClick() directly — but it's the one place the same
+// gate can otherwise be walked around entirely: simulate the click/submit
+// browser_click would have blocked, or fire the write request directly,
+// neither of which ever reaches classifyClick(). This is a best-effort
+// static scan, not a full solution — it catches a model reproducing the
+// obvious action (what actually happens in practice), not a determined,
+// obfuscated bypass; arbitrary-JS execution has no code-level way to close
+// that gap completely, the same trust model Playwright MCP's own
+// browser_evaluate already accepts.
+const DOM_MUTATION_CALL_RE = /\.(click|submit|requestSubmit)\s*\(|\bdispatchEvent\s*\(/i;
+const WRITE_FETCH_RE = /\bmethod\s*:\s*['"](post|put|patch|delete)['"]/i;
+const XHR_OPEN_WRITE_RE = /\.open\s*\(\s*['"](post|put|patch|delete)['"]/i;
+
+export function classifyEvaluate(functionSource: string): ToolResult | null {
+  if (
+    DOM_MUTATION_CALL_RE.test(functionSource) ||
+    WRITE_FETCH_RE.test(functionSource) ||
+    XHR_OPEN_WRITE_RE.test(functionSource)
+  ) {
+    return {
+      ok: false,
+      text:
+        'Blocked: this script simulates a click/submit or sends a write-verb (POST/PUT/PATCH/DELETE) ' +
+        'request, either of which could bypass browser_click\'s destructive-action gate. Not executed — ' +
+        'use browser_click on the real control if this is a genuine step, or keep browser_evaluate to ' +
+        'read-only inspection.',
+    };
+  }
+  return null;
+}

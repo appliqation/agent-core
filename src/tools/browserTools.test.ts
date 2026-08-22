@@ -289,7 +289,7 @@ describe('PlaywrightBrowserTools', () => {
     expect(result.text).toBe('Resized viewport to 1280x800');
   });
 
-  it('browser_evaluate returns the real page.evaluate() result, unrestricted', async () => {
+  it('browser_evaluate returns the real page.evaluate() result for a read-only script', async () => {
     const { page } = fakePage();
     (page.evaluate as ReturnType<typeof vi.fn>).mockResolvedValue('Dashboard');
     const tools = new PlaywrightBrowserTools(page);
@@ -304,6 +304,40 @@ describe('PlaywrightBrowserTools', () => {
     const tools = new PlaywrightBrowserTools(page);
     const result = await tools.dispatch('browser_evaluate', { function: 'void 0' });
     expect(result.text).toBe('undefined');
+  });
+
+  it('browser_evaluate is blocked by the default gate before ever touching the page — click simulation', async () => {
+    const { page } = fakePage();
+    const tools = new PlaywrightBrowserTools(page);
+    const result = await tools.dispatch('browser_evaluate', {
+      function: 'document.querySelector("[data-action=delete-account]").click()',
+    });
+    expect(result.ok).toBe(false);
+    expect(result.text).toMatch(/Blocked/);
+    expect(page.evaluate).not.toHaveBeenCalled();
+  });
+
+  it('browser_evaluate is blocked by the default gate before ever touching the page — write-verb fetch', async () => {
+    const { page } = fakePage();
+    const tools = new PlaywrightBrowserTools(page);
+    const result = await tools.dispatch('browser_evaluate', {
+      function: 'fetch("/api/account", { method: "DELETE" })',
+    });
+    expect(result.ok).toBe(false);
+    expect(page.evaluate).not.toHaveBeenCalled();
+  });
+
+  it('an injected onBeforeEvaluate hook overrides the default gate', async () => {
+    const { page } = fakePage();
+    (page.evaluate as ReturnType<typeof vi.fn>).mockResolvedValue('ok');
+    const customGate = vi.fn().mockReturnValue(null); // permissive custom policy
+    const tools = new PlaywrightBrowserTools(page, undefined, { onBeforeEvaluate: customGate });
+    const result = await tools.dispatch('browser_evaluate', {
+      function: 'document.querySelector("button").click()', // blocked under the default gate
+    });
+    expect(customGate).toHaveBeenCalledWith('document.querySelector("button").click()');
+    expect(page.evaluate).toHaveBeenCalled();
+    expect(result.text).toBe('"ok"');
   });
 
   describe('browser_tabs', () => {

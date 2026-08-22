@@ -80,9 +80,12 @@ across agents with different `.env` shapes.
   `browser_*` tool palette, ref-based via `page.ariaSnapshot({mode:'ai'})` + `aria-ref=`
   locators. Tracks a `pages: Page[]` + `selected` index rather than one fixed `Page` —
   `browser_tabs` (list/new/close/select) is the only thing that ever changes `selected`;
-  every other `browser_*` op (including `browser_resize` and the unrestricted
-  `browser_evaluate`) targets `currentPage()`, so a consumer that never calls
-  `browser_tabs` sees no behavior change. Evidence (`EvidenceCapture`, console/network
+  every other `browser_*` op (including `browser_resize` and `browser_evaluate`) targets
+  `currentPage()`, so a consumer that never calls `browser_tabs` sees no behavior change.
+  `browser_evaluate` runs arbitrary JS in the page context, gated by `destructiveActionGate.ts`'s
+  `classifyEvaluate` (best-effort — blocks a script that simulates a click/submit or sends a
+  write-verb request, same reasoning as `classifyClick` on `browser_click`, injectable via
+  `onBeforeEvaluate` the same way `onBeforeClick` is). Evidence (`EvidenceCapture`, console/network
   listeners) is tracked **per page**, not just the original one — console/network
   listeners are bound at `Page` construction, so a new tab's own evidence would
   otherwise be invisible to `browser_console_messages`/`browser_network_requests`
