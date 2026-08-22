@@ -69,4 +69,40 @@ describe('BudgetTracker', () => {
     expect(state.pages).toBe(2);
     expect(state.elapsedMillis).toBeGreaterThanOrEqual(0);
   });
+
+  describe('total-token cap (optional)', () => {
+    const tokenBudget: RunBudget = { maxCalls: 999, maxPages: 999, maxMillis: 900_000, maxTurns: 5, maxTotalTokens: 100 };
+
+    it('is not exceeded when unset — countUsage is a no-op against the check', () => {
+      const tracker = new BudgetTracker(budget); // no maxTotalTokens
+      tracker.countUsage({ inputTokens: 1_000_000, outputTokens: 1_000_000 });
+      expect(tracker.exceeded()).toBeNull();
+    });
+
+    it('sums inputTokens + outputTokens across calls and reports exceeded once the cap is reached', () => {
+      const tracker = new BudgetTracker(tokenBudget);
+      tracker.countUsage({ inputTokens: 40, outputTokens: 30 });
+      expect(tracker.exceeded()).toBeNull(); // 70 < 100
+      tracker.countUsage({ inputTokens: 20, outputTokens: 10 });
+      expect(tracker.exceeded()).toMatch(/100 total tokens \(cap 100\)/);
+    });
+
+    it('counts cache write/read tokens toward the same cap', () => {
+      const tracker = new BudgetTracker(tokenBudget);
+      tracker.countUsage({ inputTokens: 10, outputTokens: 5, cacheWriteTokens: 40, cacheReadTokens: 50 });
+      expect(tracker.exceeded()).toMatch(/105 total tokens/);
+    });
+
+    it('ignores an undefined usage object rather than throwing', () => {
+      const tracker = new BudgetTracker(tokenBudget);
+      tracker.countUsage(undefined);
+      expect(tracker.exceeded()).toBeNull();
+    });
+
+    it('state() reports the accumulated total', () => {
+      const tracker = new BudgetTracker(tokenBudget);
+      tracker.countUsage({ inputTokens: 10, outputTokens: 5 });
+      expect(tracker.state().totalTokens).toBe(15);
+    });
+  });
 });

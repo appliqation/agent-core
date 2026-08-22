@@ -69,6 +69,15 @@ export interface RunBudget {
   maxMillis: number;
   /** Hard backstop on model turns, independent of the other caps — see engine/loop.ts. */
   maxTurns: number;
+  /**
+   * Optional hard ceiling on total tokens (input + output + cache write/read,
+   * summed across every turn) for one runLoop() invocation. Optional so
+   * existing RunBudget literals (tests, older configs) don't need updating —
+   * unset means no token ceiling, matching this field's prior total absence.
+   * A consuming agent's own config should still set a real default; see
+   * config/env.ts in any consuming CLI for the established pattern.
+   */
+  maxTotalTokens?: number;
 }
 
 // A tool dispatcher maps a tool-call name+args to a result. Different stages

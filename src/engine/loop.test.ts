@@ -74,14 +74,16 @@ describe('runLoop', () => {
     const tightBudget: RunBudget = { maxCalls: 50, maxPages: 1, maxMillis: 900_000, maxTurns: 5 };
     const adapter = adapterReturning(
       withToolCall('Navigating.', 'browser_navigate', { url: 'https://example.com' }),
-      textOnly('Budget note received, stopping.'),
+      textOnly('Final report, forced.'),
     );
     const result = await runLoop({ adapter, system: 'sys', seedMessage: 'begin', tools: [], dispatch: okDispatch, budget: tightBudget });
 
-    // Second call's messages should include the budget-exceeded note.
+    // Second (forced) call's messages should ask for a final report — a
+    // request the model can't route around, since no tools are offered on
+    // that call at all (see the next test).
     const secondCallArgs = (adapter.complete as ReturnType<typeof vi.fn>).mock.calls[1][0];
     const lastMessage = secondCallArgs.messages[secondCallArgs.messages.length - 1];
-    expect(lastMessage.content).toMatch(/Budget note.*page navigations/);
+    expect(lastMessage.content).toMatch(/Produce your final report now, without calling any tool/);
     expect(result.budgetExceeded).toBe(true);
   });
 
@@ -92,6 +94,74 @@ describe('runLoop', () => {
 
     expect(result.budgetExceeded).toBe(true);
     expect(result.report).toBe('Stopping now.');
+  });
+
+  it('a cap being exceeded is a hard stop — the forced final call offers no tools at all', async () => {
+    // Previously, an exceeded cap only appended a note asking the model to
+    // stop while still passing it the full tool list, so a model that
+    // ignored the note could keep calling tools past the cap. This proves
+    // that's no longer possible: once exceeded, the only completion call
+    // left has tools: [].
+    const tightBudget: RunBudget = { maxCalls: 1, maxPages: 12, maxMillis: 900_000, maxTurns: 5 };
+    const realTools = [{ name: 'get_scenario', description: 'x', inputSchema: {} }];
+    const adapter = adapterReturning(withToolCall('One call.', 'get_scenario'), textOnly('Stopping now.'));
+    await runLoop({ adapter, system: 'sys', seedMessage: 'begin', tools: realTools, dispatch: okDispatch, budget: tightBudget });
+
+    expect(adapter.complete).toHaveBeenCalledTimes(2);
+    const secondCallArgs = (adapter.complete as ReturnType<typeof vi.fn>).mock.calls[1][0];
+    expect(secondCallArgs.tools).toEqual([]);
+  });
+
+  it('a cap being exceeded stops immediately — no further tool dispatch happens after it', async () => {
+    // Even if the model's very next response (against the forced tools:[]
+    // call) somehow still claimed tool calls, the loop must not act on them
+    // — dispatch should never be invoked again once the cap trips.
+    const tightBudget: RunBudget = { maxCalls: 1, maxPages: 12, maxMillis: 900_000, maxTurns: 5 };
+    const adapter = adapterReturning(withToolCall('One call.', 'get_scenario'), textOnly('Stopping now.'));
+    const dispatch = vi.fn().mockResolvedValue({ ok: true, text: 'result' });
+    await runLoop({ adapter, system: 'sys', seedMessage: 'begin', tools: [], dispatch, budget: tightBudget });
+
+    expect(dispatch).toHaveBeenCalledTimes(1); // only the one call before the cap tripped
+  });
+
+  it('reports budgetExceeded once the total-token cap is reached, and offers no tools on the forced final call', async () => {
+    const tokenBudget: RunBudget = { maxCalls: 50, maxPages: 12, maxMillis: 900_000, maxTurns: 5, maxTotalTokens: 100 };
+    const adapter = adapterReturning(
+      { text: 'Working.', toolCalls: [{ id: 'c1', name: 'get_scenario', arguments: {} }], usage: { inputTokens: 80, outputTokens: 30 } },
+      textOnly('Stopping — over budget.'),
+    );
+    const result = await runLoop({ adapter, system: 'sys', seedMessage: 'begin', tools: [{ name: 'x', description: 'x', inputSchema: {} }], dispatch: okDispatch, budget: tokenBudget });
+
+    expect(result.budgetExceeded).toBe(true);
+    expect(result.report).toBe('Stopping — over budget.');
+    const secondCallArgs = (adapter.complete as ReturnType<typeof vi.fn>).mock.calls[1][0];
+    expect(secondCallArgs.tools).toEqual([]);
+  });
+
+  it('cache tokens count toward the total-token cap, not just input/output', async () => {
+    const tokenBudget: RunBudget = { maxCalls: 50, maxPages: 12, maxMillis: 900_000, maxTurns: 5, maxTotalTokens: 100 };
+    const adapter = adapterReturning(
+      {
+        text: 'Working.',
+        toolCalls: [{ id: 'c1', name: 'get_scenario', arguments: {} }],
+        usage: { inputTokens: 10, outputTokens: 5, cacheWriteTokens: 40, cacheReadTokens: 50 },
+      },
+      textOnly('Stopping — over budget.'),
+    );
+    const result = await runLoop({ adapter, system: 'sys', seedMessage: 'begin', tools: [{ name: 'x', description: 'x', inputSchema: {} }], dispatch: okDispatch, budget: tokenBudget });
+
+    expect(result.budgetExceeded).toBe(true); // 10+5+40+50 = 105 >= 100
+  });
+
+  it('does not enforce a token cap when maxTotalTokens is unset', async () => {
+    const adapter = adapterReturning(
+      { text: 'Working.', toolCalls: [{ id: 'c1', name: 'get_scenario', arguments: {} }], usage: { inputTokens: 999_999, outputTokens: 999_999 } },
+      textOnly('Done normally.'),
+    );
+    const result = await runLoop({ adapter, system: 'sys', seedMessage: 'begin', tools: [], dispatch: okDispatch, budget });
+
+    expect(result.budgetExceeded).toBe(false);
+    expect(result.report).toBe('Done normally.');
   });
 
   it('hard-stops at maxTurns with one final tools-free completion call', async () => {

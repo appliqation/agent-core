@@ -25,26 +25,38 @@ export async function runLoop(args: {
   const { adapter, system, tools, dispatch, budget, signal, onEvent } = args;
   const tracker = new BudgetTracker(budget);
   const messages: LlmMessage[] = [{ role: 'user', content: args.seedMessage }];
-  let budgetExceeded = false;
+
+  // A cap being "exceeded" used to just append a note asking the model to
+  // stop while still offering it the full tool list — a request, not an
+  // enforcement, so a model that ignored it (or a turn already in flight)
+  // could keep going past the cap. This is the same hard stop maxTurns
+  // already used below: withhold tools entirely and force one final,
+  // tools-free completion call — a cap the model is told about is not a cap
+  // that's actually enforced until nothing past it can execute.
+  const finalize = async (turns: number): Promise<LoopResult> => {
+    messages.push({ role: 'user', content: 'Produce your final report now, without calling any tool.' });
+    const final = await adapter.complete({ system, messages, tools: [], signal });
+    return { report: final.text, turns, budgetExceeded: true };
+  };
 
   for (let turn = 0; turn < budget.maxTurns; turn++) {
     if (signal?.aborted) throw new Error('Run aborted');
 
     const cap = tracker.exceeded();
     if (cap) {
-      budgetExceeded = true;
-      messages.push({
-        role: 'user',
-        content: `Budget note: ${cap}. Stop probing and produce your final report now. Do not call any tool in this turn.`,
-      });
+      onEvent?.({ type: 'log', detail: `Budget cap reached: ${cap}. Requesting final report.` });
+      return finalize(turn + 1);
     }
 
     const response = await adapter.complete({ system, messages, tools, signal });
     onEvent?.({ type: 'assistant', detail: response.text });
-    if (response.usage) onEvent?.({ type: 'usage', detail: response.usage });
+    if (response.usage) {
+      onEvent?.({ type: 'usage', detail: response.usage });
+      tracker.countUsage(response.usage);
+    }
 
     if (response.toolCalls.length === 0) {
-      return { report: response.text, turns: turn + 1, budgetExceeded };
+      return { report: response.text, turns: turn + 1, budgetExceeded: false };
     }
 
     messages.push({ role: 'assistant', content: response.text, toolCalls: response.toolCalls });
@@ -74,7 +86,5 @@ export async function runLoop(args: {
   }
 
   onEvent?.({ type: 'log', detail: 'Reached max turns; requesting final report.' });
-  messages.push({ role: 'user', content: 'Produce your final report now, without calling any tool.' });
-  const final = await adapter.complete({ system, messages, tools: [], signal });
-  return { report: final.text, turns: budget.maxTurns, budgetExceeded: true };
+  return finalize(budget.maxTurns);
 }
