@@ -3,16 +3,18 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const { mockConnect, mockInsertOne, mockCollection, mockDb, MockMongoClient } = vi.hoisted(() => {
+const { mockConnect, mockClose, mockInsertOne, mockCollection, mockDb, MockMongoClient } = vi.hoisted(() => {
   const mockInsertOne = vi.fn().mockResolvedValue(undefined);
   const mockCollection = vi.fn().mockReturnValue({ insertOne: mockInsertOne });
   const mockDb = vi.fn().mockReturnValue({ collection: mockCollection });
   const mockConnect = vi.fn().mockResolvedValue(undefined);
+  const mockClose = vi.fn().mockResolvedValue(undefined);
   class MockMongoClient {
     connect = mockConnect;
     db = mockDb;
+    close = mockClose;
   }
-  return { mockConnect, mockInsertOne, mockCollection, mockDb, MockMongoClient };
+  return { mockConnect, mockClose, mockInsertOne, mockCollection, mockDb, MockMongoClient };
 });
 vi.mock('mongodb', () => ({ MongoClient: MockMongoClient }));
 
@@ -22,6 +24,7 @@ import {
   noopAuditSink,
   resolveAuditSink,
   safeRecord,
+  safeClose,
   createUsageAccumulator,
   type AuditRecord,
   type AuditSink,
@@ -43,6 +46,10 @@ function fakeRecord(overrides: Partial<AuditRecord> = {}): AuditRecord {
 describe('noopAuditSink', () => {
   it('resolves without doing anything', async () => {
     await expect(noopAuditSink.record(fakeRecord())).resolves.toBeUndefined();
+  });
+
+  it('close() resolves without doing anything', async () => {
+    await expect(noopAuditSink.close()).resolves.toBeUndefined();
   });
 });
 
@@ -68,6 +75,11 @@ describe('createJsonlAuditSink', () => {
     expect(JSON.parse(lines[0])).toMatchObject({ agent: 'a' });
     expect(JSON.parse(lines[1])).toMatchObject({ agent: 'b' });
   });
+
+  it('close() resolves without doing anything — appendFile holds no persistent handle', async () => {
+    const sink = createJsonlAuditSink({ filePath: join(dir, 'audit.jsonl') });
+    await expect(sink.close()).resolves.toBeUndefined();
+  });
 });
 
 describe('createMongoAuditSink', () => {
@@ -76,6 +88,7 @@ describe('createMongoAuditSink', () => {
     // implementations set at hoisted-definition-time before every test —
     // reassert them here, not just clear call history.
     mockConnect.mockReset().mockResolvedValue(undefined);
+    mockClose.mockReset().mockResolvedValue(undefined);
     mockDb.mockReset().mockReturnValue({ collection: mockCollection });
     mockCollection.mockReset().mockReturnValue({ insertOne: mockInsertOne });
     mockInsertOne.mockReset().mockResolvedValue(undefined);
@@ -99,6 +112,19 @@ describe('createMongoAuditSink', () => {
     await sink.record(fakeRecord());
     expect(mockConnect).toHaveBeenCalledTimes(1);
     expect(mockInsertOne).toHaveBeenCalledTimes(2);
+  });
+
+  it('close() closes the client after at least one record() call — N-03: the driver otherwise holds the event loop open forever', async () => {
+    const sink = createMongoAuditSink({ uri: 'mongodb://localhost', dbName: 'audit', collection: 'runs' });
+    await sink.record(fakeRecord());
+    await sink.close();
+    expect(mockClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('close() is a no-op when record() was never called — no client was ever created to close', async () => {
+    const sink = createMongoAuditSink({ uri: 'mongodb://localhost', dbName: 'audit', collection: 'runs' });
+    await expect(sink.close()).resolves.toBeUndefined();
+    expect(mockClose).not.toHaveBeenCalled();
   });
 });
 
@@ -135,16 +161,31 @@ describe('resolveAuditSink', () => {
 
 describe('safeRecord', () => {
   it('calls through to the sink on success', async () => {
-    const sink: AuditSink = { record: vi.fn().mockResolvedValue(undefined) };
+    const sink: AuditSink = { record: vi.fn().mockResolvedValue(undefined), close: vi.fn().mockResolvedValue(undefined) };
     await safeRecord(sink, fakeRecord());
     expect(sink.record).toHaveBeenCalled();
   });
 
   it('never throws when the sink rejects — logs a warning instead', async () => {
-    const sink: AuditSink = { record: vi.fn().mockRejectedValue(new Error('connection refused')) };
+    const sink: AuditSink = { record: vi.fn().mockRejectedValue(new Error('connection refused')), close: vi.fn().mockResolvedValue(undefined) };
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     await expect(safeRecord(sink, fakeRecord())).resolves.toBeUndefined();
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('connection refused'));
+  });
+});
+
+describe('safeClose', () => {
+  it('calls through to the sink on success', async () => {
+    const sink: AuditSink = { record: vi.fn().mockResolvedValue(undefined), close: vi.fn().mockResolvedValue(undefined) };
+    await safeClose(sink);
+    expect(sink.close).toHaveBeenCalled();
+  });
+
+  it('never throws when close() rejects — logs a warning instead, same as safeRecord', async () => {
+    const sink: AuditSink = { record: vi.fn().mockResolvedValue(undefined), close: vi.fn().mockRejectedValue(new Error('close timed out')) };
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(safeClose(sink)).resolves.toBeUndefined();
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('close timed out'));
   });
 });
 

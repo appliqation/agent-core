@@ -34,11 +34,25 @@ export interface AuditRecord {
 
 export interface AuditSink {
   record(entry: AuditRecord): Promise<void>;
+  /**
+   * Releases whatever resource this sink holds open (a Mongo connection
+   * pool/topology monitor) — a no-op for sinks that hold nothing. Every CLI
+   * calls this once via safeClose() after its one record() call, since none
+   * of these CLIs call process.exit() (see cli/index.ts's top-level
+   * .catch()) — they set process.exitCode and let the event loop drain,
+   * which is correct, but means anything still holding the loop open (an
+   * unclosed Mongo client's background timers/sockets) hangs the process
+   * indefinitely instead of exiting.
+   */
+  close(): Promise<void>;
 }
 
 export const noopAuditSink: AuditSink = {
   async record() {
     // Intentionally does nothing — the default when no sink is configured.
+  },
+  async close() {
+    // Nothing was ever opened.
   },
 };
 
@@ -47,20 +61,24 @@ export function createJsonlAuditSink(opts: { filePath: string }): AuditSink {
     async record(entry) {
       await appendFile(opts.filePath, JSON.stringify(entry) + '\n', 'utf8');
     },
+    async close() {
+      // appendFile holds no persistent handle open — nothing to release.
+    },
   };
 }
 
 export function createMongoAuditSink(opts: { uri: string; dbName: string; collection: string }): AuditSink {
+  let client: MongoClient | undefined;
   let collectionPromise: Promise<Collection<AuditRecord>> | undefined;
 
   function getCollection(): Promise<Collection<AuditRecord>> {
     // Lazy-connect-once: the client is created and connected on the first
     // record() call, then reused — a CLI invocation that never calls
     // record() (e.g. audit unconfigured elsewhere in the same process)
-    // never opens a connection at all.
+    // never opens a connection at all, and close() below has nothing to do.
     if (!collectionPromise) {
-      const client = new MongoClient(opts.uri);
-      collectionPromise = client.connect().then(() => client.db(opts.dbName).collection<AuditRecord>(opts.collection));
+      client = new MongoClient(opts.uri);
+      collectionPromise = client.connect().then(() => client!.db(opts.dbName).collection<AuditRecord>(opts.collection));
     }
     return collectionPromise;
   }
@@ -69,6 +87,9 @@ export function createMongoAuditSink(opts: { uri: string; dbName: string; collec
     async record(entry) {
       const collection = await getCollection();
       await collection.insertOne(entry);
+    },
+    async close() {
+      if (client) await client.close();
     },
   };
 }
@@ -86,6 +107,19 @@ export async function safeRecord(sink: AuditSink, entry: AuditRecord): Promise<v
     await sink.record(entry);
   } catch (err) {
     console.error(`[audit] failed to record: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * Every CLI should call this once, after its one safeRecord() call — see
+ * AuditSink.close() above for why. Same non-fatal reasoning as safeRecord():
+ * a failure to close cleanly must never affect the real run's exit code.
+ */
+export async function safeClose(sink: AuditSink): Promise<void> {
+  try {
+    await sink.close();
+  } catch (err) {
+    console.error(`[audit] failed to close cleanly: ${(err as Error).message}`);
   }
 }
 

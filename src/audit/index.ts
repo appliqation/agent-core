@@ -7,5 +7,6 @@ export {
   createMongoAuditSink,
   resolveAuditSink,
   safeRecord,
+  safeClose,
   createUsageAccumulator,
 } from './sink.js';
