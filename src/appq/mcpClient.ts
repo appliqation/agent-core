@@ -6,6 +6,19 @@
 export interface McpClientOptions {
   origin: string;
   apiKey: string;
+  /**
+   * Per-HTTP-call timeout in millis, via AbortSignal.timeout() — without
+   * this, a hung appq origin hangs the call (and the whole run) forever,
+   * since fetch has no default timeout of its own. Defaults to 30s.
+   */
+  timeoutMs?: number;
+  /**
+   * Retry attempts for a transient failure (network error, HTTP 429, or a
+   * 5xx) before giving up — not a JSON-RPC application-level error or any
+   * other non-retryable HTTP status, which retrying can't fix. Defaults to
+   * 2 (3 attempts total), with exponential backoff between attempts.
+   */
+  maxRetries?: number;
 }
 
 interface JsonRpcResponse<T> {
@@ -58,12 +71,55 @@ export interface McpClient {
   uploadScreenshot(pngBuffer: Buffer, label: string): Promise<string>;
 }
 
+const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_RETRIES = 2;
+const RETRY_BASE_DELAY_MS = 300;
+
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export function createMcpClient(opts: McpClientOptions): McpClient {
   let requestId = 0;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const maxRetries = opts.maxRetries ?? DEFAULT_MAX_RETRIES;
+
+  // Every fetch in this client goes through here — a hung origin now times
+  // out instead of hanging the run forever, and a transient failure (network
+  // error, 429, 5xx) gets a few retries with backoff before giving up. The
+  // last attempt's response/error is what the caller sees either way — no
+  // silent retry-then-succeed masking, just fewer spurious failures from
+  // blips that would have succeeded a moment later.
+  async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const res = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+        if (isRetryableStatus(res.status) && attempt < maxRetries) {
+          lastError = new Error(`appq MCP HTTP ${res.status}`);
+          await sleep(RETRY_BASE_DELAY_MS * 2 ** attempt);
+          continue;
+        }
+        return res;
+      } catch (err) {
+        lastError = err;
+        if (attempt < maxRetries) {
+          await sleep(RETRY_BASE_DELAY_MS * 2 ** attempt);
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastError;
+  }
 
   async function rpc<T>(method: string, params: Record<string, unknown>): Promise<T> {
     const id = ++requestId;
-    const res = await fetch(`${opts.origin}/api/appq/mcp`, {
+    const res = await fetchWithRetry(`${opts.origin}/api/appq/mcp`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -124,7 +180,7 @@ export function createMcpClient(opts: McpClientOptions): McpClient {
     },
 
     async uploadScreenshot(pngBuffer, label) {
-      const res = await fetch(`${opts.origin}/api/appq/mcp/upload-screenshot`, {
+      const res = await fetchWithRetry(`${opts.origin}/api/appq/mcp/upload-screenshot`, {
         method: 'POST',
         headers: {
           'X-API-Key': opts.apiKey,

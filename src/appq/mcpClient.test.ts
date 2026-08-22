@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createMcpClient } from './mcpClient.js';
 
 function jsonRpcOk(result: unknown, id = 1) {
@@ -14,7 +14,11 @@ function httpError(status: number, body = 'server error') {
 }
 
 function client() {
-  return createMcpClient({ origin: 'https://appq.test', apiKey: 'test-api-key' });
+  // maxRetries: 0 — these tests aren't exercising retry behavior, and the
+  // default retry count would otherwise make a "throws on HTTP 500" test
+  // wait through real backoff delays for no reason. See the dedicated
+  // "timeout and retry" describe block below for that behavior.
+  return createMcpClient({ origin: 'https://appq.test', apiKey: 'test-api-key', maxRetries: 0 });
 }
 
 describe('callTool', () => {
@@ -127,6 +131,117 @@ describe('listTools', () => {
     const tools = [{ name: 'get_scenario', description: 'x', inputSchema: {} }];
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonRpcOk({ tools })));
     expect(await client().listTools()).toEqual(tools);
+  });
+});
+
+describe('timeout and retry', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('applies AbortSignal.timeout so a hung origin cannot hang the call forever', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonRpcOk({ content: [{ type: 'text', text: 'ok' }] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const c = createMcpClient({ origin: 'https://appq.test', apiKey: 'k', timeoutMs: 5000, maxRetries: 0 });
+    await c.callTool('t', {});
+    const init = fetchMock.mock.calls[0][1];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('retries a 500 and succeeds on the next attempt, never surfacing the failure to the caller', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(httpError(500))
+      .mockResolvedValueOnce(jsonRpcOk({ content: [{ type: 'text', text: 'recovered' }] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const c = createMcpClient({ origin: 'https://appq.test', apiKey: 'k', maxRetries: 2 });
+
+    const resultPromise = c.callTool('t', {});
+    await vi.runAllTimersAsync();
+    const result = await resultPromise;
+
+    expect(result.text).toBe('recovered');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries a 429 the same way as a 5xx', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(httpError(429, 'rate limited'))
+      .mockResolvedValueOnce(jsonRpcOk({ content: [{ type: 'text', text: 'ok' }] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const c = createMcpClient({ origin: 'https://appq.test', apiKey: 'k', maxRetries: 2 });
+
+    const resultPromise = c.callTool('t', {});
+    await vi.runAllTimersAsync();
+    const result = await resultPromise;
+    expect(result.text).toBe('ok');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries a network-level rejection (not just a bad HTTP status)', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('ECONNRESET'))
+      .mockResolvedValueOnce(jsonRpcOk({ content: [{ type: 'text', text: 'ok' }] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const c = createMcpClient({ origin: 'https://appq.test', apiKey: 'k', maxRetries: 2 });
+
+    const resultPromise = c.callTool('t', {});
+    await vi.runAllTimersAsync();
+    const result = await resultPromise;
+    expect(result.text).toBe('ok');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives up after exhausting retries and surfaces the last real failure', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(httpError(503, 'still down'));
+    vi.stubGlobal('fetch', fetchMock);
+    const c = createMcpClient({ origin: 'https://appq.test', apiKey: 'k', maxRetries: 2 });
+
+    const resultPromise = c.callTool('t', {});
+    const assertion = expect(resultPromise).rejects.toThrow(/HTTP 503.*still down/s);
+    await vi.runAllTimersAsync();
+    await assertion;
+    expect(fetchMock).toHaveBeenCalledTimes(3); // 1 initial + 2 retries
+  });
+
+  it('does not retry a non-retryable HTTP status (e.g. 400)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(httpError(400, 'bad request'));
+    vi.stubGlobal('fetch', fetchMock);
+    const c = createMcpClient({ origin: 'https://appq.test', apiKey: 'k', maxRetries: 2 });
+
+    await expect(c.callTool('t', {})).rejects.toThrow(/HTTP 400/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry a JSON-RPC application-level error — retrying can\'t fix it', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonRpcError(-32601, 'Method not found'));
+    vi.stubGlobal('fetch', fetchMock);
+    const c = createMcpClient({ origin: 'https://appq.test', apiKey: 'k', maxRetries: 2 });
+
+    await expect(c.callTool('t', {})).rejects.toThrow(/Method not found/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries uploadScreenshot the same way as an RPC call', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 502, text: async () => 'bad gateway' })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ upload_id: 'abc' }) });
+    vi.stubGlobal('fetch', fetchMock);
+    const c = createMcpClient({ origin: 'https://appq.test', apiKey: 'k', maxRetries: 2 });
+
+    const uploadPromise = c.uploadScreenshot(Buffer.from([1]), 'label');
+    await vi.runAllTimersAsync();
+    const uploadId = await uploadPromise;
+    expect(uploadId).toBe('abc');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
 
