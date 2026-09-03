@@ -17,17 +17,24 @@ export async function resolveRun(
   opts: {
     runId?: string;
     scenarioId?: string;
+    testSetId?: string;
     projectId?: string;
     environment?: string;
   },
 ): Promise<string> {
   if (opts.runId) return opts.runId;
-  if (!opts.scenarioId || !opts.projectId) {
-    throw new Error('--scenario-id and --project-id are required to create a run (or pass --run-id to reuse one).');
+  if (!opts.projectId || (!opts.scenarioId && !opts.testSetId)) {
+    throw new Error(
+      '--project-id plus exactly one of --scenario-id/--test-set-id are required to create a run ' +
+        '(or pass --run-id to reuse one).',
+    );
+  }
+  if (opts.scenarioId && opts.testSetId) {
+    throw new Error('--scenario-id and --test-set-id are mutually exclusive when creating a run.');
   }
   const created = await client.callTool('update_run_results', {
     action: 'create_run',
-    scenario_id: Number(opts.scenarioId),
+    ...(opts.scenarioId ? { scenario_id: Number(opts.scenarioId) } : { test_set_id: Number(opts.testSetId) }),
     project_id: Number(opts.projectId),
     ...(opts.environment ? { environment: opts.environment } : {}),
   });

@@ -60,10 +60,16 @@ describe('resolveRun', () => {
     expect(client.callTool).not.toHaveBeenCalled();
   });
 
-  it('throws when no run-id and scenario/project are incomplete', async () => {
-    await expect(resolveRun(client, { scenarioId: '1' })).rejects.toThrow(/--scenario-id and --project-id are required/);
+  it('throws when no run-id and scenario/testset/project are incomplete', async () => {
+    await expect(resolveRun(client, { scenarioId: '1' })).rejects.toThrow(/--project-id plus exactly one of/);
     await expect(resolveRun(client, { projectId: '1' })).rejects.toThrow();
     await expect(resolveRun(client, {})).rejects.toThrow();
+  });
+
+  it('throws when both scenarioId and testSetId are given — mutually exclusive', async () => {
+    await expect(resolveRun(client, { scenarioId: '2424', testSetId: '1358', projectId: '1349' })).rejects.toThrow(
+      /mutually exclusive/,
+    );
   });
 
   it('creates a run via update_run_results when scenario_id + project_id are given', async () => {
@@ -75,6 +81,22 @@ describe('resolveRun', () => {
       scenario_id: 2424,
       project_id: 1349,
     });
+  });
+
+  it('creates a single run via update_run_results when test_set_id + project_id are given, spanning multiple scenarios', async () => {
+    (client.callTool as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true, text: JSON.stringify({ run_id: 'run_testset' }) });
+    const runId = await resolveRun(client, { testSetId: '1358', projectId: '1349' });
+    expect(runId).toBe('run_testset');
+    expect(client.callTool).toHaveBeenCalledWith('update_run_results', {
+      action: 'create_run',
+      test_set_id: 1358,
+      project_id: 1349,
+    });
+    // scenario_id must NOT be sent alongside test_set_id.
+    expect(client.callTool).not.toHaveBeenCalledWith(
+      'update_run_results',
+      expect.objectContaining({ scenario_id: expect.anything() }),
+    );
   });
 
   it('includes environment in the create_run call only when given', async () => {
