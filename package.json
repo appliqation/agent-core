@@ -1,11 +1,16 @@
 {
   "name": "@appliqation/agent-core",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Shared engine (think->act->observe loop, budget tracking, appq MCP client, gated tool dispatch, Playwright browser tools, evidence capture) for Appliqation's family of standalone agents.",
   "license": "MIT",
-  "repository": { "type": "git", "url": "git+https://github.com/appliqation/agent-core.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/appliqation/agent-core.git"
+  },
   "homepage": "https://github.com/appliqation/agent-core#readme",
-  "bugs": { "url": "https://github.com/appliqation/agent-core/issues" },
+  "bugs": {
+    "url": "https://github.com/appliqation/agent-core/issues"
+  },
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
